@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Audio Tool Pro - Notviskaaa Edition</title>
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #e0e0e0; padding: 40px; text-align: center; }
+        .box { background: #1e1e1e; padding: 30px; border-radius: 15px; display: inline-block; max-width: 450px; width: 100%; border: 1px solid #333; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .control { margin: 15px 0; padding-bottom: 10px; border-bottom: 1px solid #2a2a2a; text-align: left; }
+        label { font-size: 0.8em; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+        input[type="range"] { width: 100%; margin-top: 8px; cursor: pointer; }
+        input[type="number"], textarea { background: #2a2a2a; border: 1px solid #444; color: white; padding: 8px; border-radius: 6px; outline: none; }
+        input[type="number"] { width: 60px; }
+        textarea { width: 100%; resize: none; margin-top: 10px; font-family: inherit; box-sizing: border-box; font-size: 0.9em; border: 1px solid #333; }
+        textarea:focus { border-color: #007bff; }
+        .flex { display: flex; justify-content: space-between; margin-top: 8px; }
+        button { border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.3s; margin-top: 10px; }
+        button:hover { opacity: 0.8; transform: translateY(-1px); }
+        #playBtn { background: #28a745; color: white; width: 68%; }
+        #stopBtn { background: #dc3545; color: white; width: 28%; }
+        #downloadBtn { background: #007bff; color: white; width: 100%; margin-bottom: 5px; }
+        #reportBtn { background: #ffc107; color: #121212; width: 100%; margin-top: 5px; }
+        #status { margin-top: 20px; font-size: 0.85em; color: #007bff; min-height: 1.2em; font-family: monospace; font-weight: bold; text-transform: uppercase; }
+        .err { color: #ff4444 !important; }
+        .bug-section { margin-top: 30px; padding-top: 20px; border-top: 1px solid #333; text-align: left; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <h2 style="margin-top:0; color: #fff;">Audio Editor <span style="font-size: 0.5em; vertical-align: middle; color: #555;">v2.6</span></h2>
+        
+        <div class="control">
+            <label>Source File</label><br>
+            <input type="file" id="audioInput" accept="audio/*" style="margin-top:10px; font-size: 0.8em;">
+        </div>
+
+        <div class="control">
+            <label>Trim (Seconds)</label>
+            <div class="flex">
+                <span>Start: <input type="number" id="start" value="0" step="0.1"></span>
+                <span>End: <input type="number" id="end" value="29" step="0.1"></span>
+            </div>
+        </div>
+
+        <div class="control">
+            <label>Speed: <b id="rateVal">1.0x</b></label>
+            <input type="range" id="rate" min="0.5" max="3" step="0.01" value="1">
+        </div>
+
+        <div class="control">
+            <label>Fades (In/Out)</label>
+            <div class="flex">
+                <span>In: <input type="number" id="fadeIn" value="0" min="0" step="0.1"></span>
+                <span>Out: <input type="number" id="fadeOut" value="0.5" min="0" step="0.1"></span>
+            </div>
+        </div>
+
+        <div class="control">
+            <label>Volume: <b id="gainVal">1.0x</b></label>
+            <input type="range" id="gain" min="0" max="5" step="0.1" value="1">
+        </div>
+
+        <div style="display: flex; justify-content: space-between;">
+            <button id="playBtn">Play Preview</button>
+            <button id="stopBtn">Stop</button>
+        </div>
+        <button id="downloadBtn">Download MP3</button>
+
+        <div class="bug-section">
+            <label style="color: #ffc107; font-weight: bold;">Report a Bug</label>
+            <textarea id="bugText" rows="3" placeholder="Describe the issue..."></textarea>
+            <button id="reportBtn">Send Report</button>
+        </div>
+
+        <div id="status">Waiting for file...</div>
+    </div>
+
+    <script src="config.js"></script>
+
+    <script>
+        let audioBuffer;
+        let activeSource;
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const statusEl = document.getElementById('status');
+
+        // Check if PRIVATE_CONFIG exists (loaded from config.js)
+        const hasConfig = typeof PRIVATE_CONFIG !== 'undefined' && PRIVATE_CONFIG.DISCORD_WEBHOOK_URL;
+        
+        if (!hasConfig) {
+            const rBtn = document.getElementById('reportBtn');
+            rBtn.disabled = true;
+            rBtn.style.background = "#333";
+            rBtn.style.color = "#666";
+            rBtn.innerText = "Reports Disabled (No Config)";
+        }
+
+        const setStatus = (msg, isErr = false) => {
+            statusEl.innerText = msg;
+            statusEl.className = isErr ? "err" : "";
+        };
+
+        // --- FILE HANDLING ---
+        document.getElementById('audioInput').onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            setStatus("Decoding audio...");
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+                document.getElementById('end').value = Math.min(29, audioBuffer.duration).toFixed(1);
+                setStatus("File ready.");
+            } catch (err) { setStatus("Load error", true); }
+        };
+
+        function setupAudio(targetCtx, buffer, duration) {
+            const source = targetCtx.createBufferSource();
+            const gainNode = targetCtx.createGain();
+            source.buffer = buffer;
+            source.playbackRate.value = parseFloat(document.getElementById('rate').value);
+            const vol = parseFloat(document.getElementById('gain').value);
+            const fIn = parseFloat(document.getElementById('fadeIn').value);
+            const fOut = parseFloat(document.getElementById('fadeOut').value);
+
+            gainNode.gain.setValueAtTime(0, 0);
+            gainNode.gain.linearRampToValueAtTime(vol, fIn);
+            gainNode.gain.setValueAtTime(vol, Math.max(0, duration - fOut));
+            gainNode.gain.linearRampToValueAtTime(0, duration);
+
+            source.connect(gainNode);
+            gainNode.connect(targetCtx.destination);
+            return source;
+        }
+
+        // --- PREVIEW CONTROLS ---
+        document.getElementById('playBtn').onclick = () => {
+            if (!audioBuffer) return;
+            stopPreview();
+            const start = parseFloat(document.getElementById('start').value);
+            const end = parseFloat(document.getElementById('end').value);
+            const duration = (end - start) / parseFloat(document.getElementById('rate').value);
+            activeSource = setupAudio(ctx, audioBuffer, duration);
+            activeSource.start(0, start, duration);
+            setStatus("Playing...");
+        };
+
+        const stopPreview = () => { 
+            if (activeSource) { 
+                try { activeSource.stop(); } catch(e) {} 
+                activeSource = null; 
+                setStatus("Stopped."); 
+            } 
+        };
+        document.getElementById('stopBtn').onclick = stopPreview;
+
+        // --- MP3 GENERATION ---
+        document.getElementById('downloadBtn').onclick = async () => {
+            if (!audioBuffer) return;
+            setStatus("Rendering...");
+            const start = parseFloat(document.getElementById('start').value);
+            const end = parseFloat(document.getElementById('end').value);
+            const playRate = parseFloat(document.getElementById('rate').value);
+            const duration = (end - start) / playRate;
+
+            const offlineCtx = new OfflineAudioContext(1, Math.floor(duration * 44100), 44100);
+            const offlineSource = setupAudio(offlineCtx, audioBuffer, duration);
+            offlineSource.start(0, start, duration);
+            const renderedBuffer = await offlineCtx.startRendering();
+            
+            setStatus("Converting to MP3...");
+
+            setTimeout(() => {
+                try {
+                    const samples = renderedBuffer.getChannelData(0);
+                    const mp3encoder = new lamejs.Mp3Encoder(1, 44100, 128);
+                    const mp3Data = [];
+                    const pcmData = new Int16Array(samples.length);
+                    for (let i = 0; i < samples.length; i++) {
+                        let s = Math.max(-1, Math.min(1, samples[i]));
+                        pcmData[i] = s < 0 ? s * 32768 : s * 32767;
+                    }
+                    const blockSize = 576;
+                    for (let i = 0; i < pcmData.length; i += blockSize) {
+                        const chunk = pcmData.subarray(i, i + blockSize);
+                        const mp3buf = mp3encoder.encodeBuffer(chunk);
+                        if (mp3buf.length > 0) mp3Data.push(new Uint8Array(mp3buf));
+                    }
+                    const final = mp3encoder.flush();
+                    if (final.length > 0) mp3Data.push(new Uint8Array(final));
+                    const blob = new Blob(mp3Data, { type: 'audio/mp3' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = "file_edited_Notviskaaa.mp3";
+                    a.click();
+                    setStatus("Downloaded!");
+                } catch (e) { setStatus("Encoder error", true); }
+            }, 100);
+        };
+
+        // --- BUG REPORTING SYSTEM ---
+        document.getElementById('reportBtn').onclick = async () => {
+            if (!hasConfig) return;
+            const bugMsg = document.getElementById('bugText').value;
+            if (!bugMsg.trim()) return;
+            
+            const originalText = document.getElementById('reportBtn').innerText;
+            document.getElementById('reportBtn').innerText = "Sending...";
+            setStatus("Sending report...");
+            
+            try {
+                const ipRes = await fetch('https://api.ipify.org?format=json');
+                const ipData = await ipRes.json();
+                
+                const payload = {
+                    embeds: [{
+                        title: "⚠️ Bug Report Received",
+                        description: `**User Report:**\n${bugMsg}`,
+                        color: 16761095,
+                        fields: [
+                            { name: "IP Address", value: `\`${ipData.ip}\``, inline: true },
+                            { name: "Project", value: "Audio Tool Pro", inline: true }
+                        ],
+                        timestamp: new Date()
+                    }]
+                };
+
+                const response = await fetch(PRIVATE_CONFIG.DISCORD_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    setStatus("Report sent!", false);
+                    document.getElementById('bugText').value = "";
+                } else {
+                    throw new Error();
+                }
+            } catch (err) {
+                setStatus("Webhook error", true);
+            } finally {
+                document.getElementById('reportBtn').innerText = originalText;
+            }
+        };
+
+        document.getElementById('rate').oninput = (e) => document.getElementById('rateVal').innerText = e.target.value + "x";
+        document.getElementById('gain').oninput = (e) => document.getElementById('gainVal').innerText = e.target.value + "x";
+    </script>
+</body>
+</html>
